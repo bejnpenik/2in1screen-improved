@@ -5,12 +5,15 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <signal.h>
 #include <errno.h>
 #include <xcb/xcb.h>
 #include <xcb/randr.h>
 #include <xcb/xinput.h>
 #include "xcb_util_functions.h"
+#include "ipc.h"
 
 /// D E F I N I T I O N S///
 const char CRTC_NAME[] = "eDP1";
@@ -36,17 +39,19 @@ xcb_input_device_info_t *device_info = NULL;
 xcb_randr_screen_size_t *scrn_size;
 int default_screen_no;
 xcb_window_t root;
-
+static int sock_fd, cli_fd, read_len;
 static int run = 0;
 static int only_touchinput = 0;
 static int only_crtc = 0;
+static int crtc_disconnected = 0;
 int current_state = 0;
 pid_t bar;
+char *bar_command_path = NULL;
+char *socket_path = NULL;
 int db;
 int sel_fd;
-
+static char buffer[MAX_MSG_LEN] = {0};
 /// E N D   D E F I N I T I O N S///
-
 
 pid_t popen2(char **command, int *infp, int *outfp)
 {
@@ -85,7 +90,6 @@ pid_t popen2(char **command, int *infp, int *outfp)
 
 	return pid;
 }
-
 void rotate(void){
 	switch(current_state){
 		case 0:
@@ -162,20 +166,6 @@ void rotate_only_touchinput(void){
 }
 
 
-void repaint_bar(char *bar_command_path, int sensors_fd){
-	kill(bar, 15);
-	if (current_state == 2 || current_state==3){
-		char *bar_comm[] = {bar_command_path, "vertical", NULL};
-		bar = popen2(bar_comm, NULL, &db);
-	}else{
-		char *bar_comm[] = {bar_command_path, "horizontal", NULL};
-		bar = popen2(bar_comm, NULL, &db);
-	}
-	fcntl(db, F_SETFL, O_RDWR | O_NONBLOCK);
-	sel_fd = MAX(sensors_fd, db) + 1;
-	
-}
-
 
 void handle_signal(int sig)
 {
@@ -183,14 +173,105 @@ void handle_signal(int sig)
         run = 0;
 		
 }
+void repaint_bar(void){
+	if (bar_command_path != NULL){
+		kill(bar, 15);
+		if (current_state == 2 || current_state==3){
+				if (socket_path != NULL){
+					char *bar_comm[] = {bar_command_path, "--socket-path", socket_path, "--orientation", "vertical", NULL};
+					bar = popen2(bar_comm, NULL, NULL);
+				}else{
+					char *bar_comm[] = {bar_command_path, "--orientation", "vertical", NULL};
+					bar = popen2(bar_comm, NULL, NULL);
+				}
+		}else{
+			if (socket_path != NULL){
+					char *bar_comm[] = {bar_command_path, "--socket-path", socket_path, "--orientation", "horizontal", NULL};
+					bar = popen2(bar_comm, NULL, NULL);
+				}else{
+					char *bar_comm[] = {bar_command_path, "--orientation", "horizontal", NULL};
+					bar = popen2(bar_comm, NULL, NULL);
+				}
+		}
+	}
+	
+}
+void exec_command(int command){
+	switch (command){
+		case LEFT:
+			current_state = 2;
+			if (!lock_rotation && !only_touchinput){
+				if (only_crtc) rotate_only_crtc();
+				else rotate();
+				repaint_bar();
+			}else
+			if (only_touchinput){
+				rotate_only_touchinput();
+			}
+			break;
+		case RIGHT:
+			current_state = 3;
+			if (!lock_rotation && !only_touchinput){
+				if (only_crtc) rotate_only_crtc();
+				else rotate();
+				repaint_bar();
+			}else
+			if (only_touchinput){
+				rotate_only_touchinput();
+			}
+			break;
+		case NORMAL:
+			current_state = 0;
+			if (!lock_rotation && !only_touchinput){
+				if (only_crtc) rotate_only_crtc();
+				else rotate();
+				repaint_bar();
+			}else
+			if (only_touchinput){
+				rotate_only_touchinput();
+			}
+			break;
+		case INVERTED:
+			current_state = 1;
+			if (!lock_rotation && !only_touchinput){
+				if (only_crtc) rotate_only_crtc();
+				else rotate();
+				repaint_bar();
+			}else
+			if (only_touchinput){
+				rotate_only_touchinput();
+			}
+			break;
+		case LOCK:
+			lock_rotation = 1;
+			break;
+		case UNLOCK:
+			lock_rotation = 0;
+			break;
+		case TOGGLE:
+			lock_rotation = !lock_rotation;
+			break;
+	}
+}
+
 int main(int argc, char const *argv[]) {
 	/// G E T    A R G U M E N T S ///
 	int Error = 0;
-	char *bar_command_path = NULL;
+	bar_command_path = NULL;
+	socket_path = NULL;
 	if (argc > 1){
 		for (int i = 1; i < argc; i++){
 			if (strncmp(argv[i], "--rotate-only-touchinput", 24)==0){	
 				only_touchinput = 1;	
+			}else
+			if (strncmp(argv[i], "--rotate-only-output", 20)==0){	
+				only_crtc = 1;	
+			}else
+			if (strncmp(argv[i], "--socket-path", 13) == 0){
+				int path_len = strlen(argv[i+1]);
+				socket_path = (char *)malloc((path_len+ 1)*sizeof(char));
+				memcpy(socket_path, argv[i+1], path_len);
+				socket_path[path_len] = '\0';
 			}else
 			if (strncmp(argv[i], "--bar-command-path", 18)==0){
 				
@@ -198,10 +279,6 @@ int main(int argc, char const *argv[]) {
 				bar_command_path = (char *)malloc((path_len+ 1)*sizeof(char));
 				memcpy(bar_command_path, argv[i+1], path_len);
 				bar_command_path[path_len] = '\0';
-				
-			}else
-			if (strncmp(argv[i], "--rotate-only-output", 20)==0){	
-				only_crtc = 1;	
 			}
 		}
 	}
@@ -226,27 +303,53 @@ int main(int argc, char const *argv[]) {
 	}
 	root = scrn->root;
 	scrn_size = get_screen_size(scrn->root);
-	
+	///   //////   ///
 	/// I N I T   B A R ///
-	char *bar_comm[] = {bar_command_path, NULL};
+	
 	if (bar_command_path != NULL){
-		bar = popen2(bar_comm, NULL, &db);
-		fcntl(db, F_SETFL, O_RDWR | O_NONBLOCK);
-	}else{
-		db = -1;
+		if (socket_path != NULL){
+			char *bar_comm[] = {bar_command_path, "--socket-path", socket_path, NULL};
+			bar = popen2(bar_comm, NULL, NULL);
+		}else{
+			char *bar_comm[] = {bar_command_path, NULL};
+			bar = popen2(bar_comm, NULL, NULL);
+		}
 	}
 	///  //////  ///
-	/// I N I T    S E N S O R S ///
-	char cwd[256];
-	if (getcwd(cwd, sizeof(cwd)) == NULL) exit(1);
-	char sensor_exec_path[256] = {0};
-	sensor_exec_path[0] = '\0';
-	strcat(sensor_exec_path, cwd);
-	strcat(sensor_exec_path, "/sensors");
-	char *sensor_comm[] = {sensor_exec_path, NULL};
-	int sensors_fd; pid_t sensors = popen2(sensor_comm, NULL, &sensors_fd);
-	fcntl(sensors_fd, F_SETFL, O_RDWR | O_NONBLOCK);
+	/// X C B   F I L E   D E S C R I P T O R   ///
+	int conn_fd = xcb_get_file_descriptor(conn);
 	///  //////  ///
+	/// A D D   R A N D R   N O T I F Y   E V E N T   ///
+	xcb_randr_select_input(conn, root, XCB_RANDR_NOTIFY_MASK_SCREEN_CHANGE);
+  	xcb_flush(conn);
+	xcb_randr_screen_change_notify_event_t* randr_evt;
+	xcb_generic_event_t* evt;
+  	xcb_timestamp_t last_time;
+	///   //////   ///
+	///   E S T A B L I S H   S E R V E R   ///
+	struct sockaddr_un  sock_adress;
+	if ((sock_fd = socket(AF_UNIX,SOCK_STREAM,0)) < 0){
+		Error = 1;
+		goto cleanup;
+	}
+	sock_adress.sun_family = AF_UNIX;
+	if (socket_path == NULL){
+		strcpy(sock_adress.sun_path, socket_path_default);
+	}else{
+		strcpy(sock_adress.sun_path, socket_path);
+	}
+	unlink(sock_adress.sun_path);
+	if (bind(sock_fd, (struct sockaddr *) &sock_adress, sizeof(sock_adress)) == -1) {
+		Error = 1;
+		goto cleanup;
+	}
+	if (listen(sock_fd, SOMAXCONN) == -1) {
+		Error = 1;
+		goto cleanup;	
+	}
+	int flags = fcntl(sock_fd, F_GETFL, 0);
+    fcntl(sock_fd, F_SETFL, flags | O_NONBLOCK);
+	///   //////   ///
 	/// R E G I S T E R   S I G N A L S ///
 	signal(SIGTERM, handle_signal);
 	signal(SIGINT, handle_signal);
@@ -256,47 +359,57 @@ int main(int argc, char const *argv[]) {
 	run = 1;
 	char buff[256] = {0};
 	fd_set descriptors;
-	sel_fd = MAX(db, sensors_fd) + 1;
+	sel_fd = MAX(sock_fd, conn_fd) + 1;
+    last_time = XCB_CURRENT_TIME;
 	while(run){
 		FD_ZERO(&descriptors);
-		FD_SET(db, &descriptors);
-		FD_SET(sensors_fd, &descriptors);
+		FD_SET(conn_fd, &descriptors);
+		FD_SET(sock_fd, &descriptors);
+		sel_fd = MAX(sock_fd, conn_fd) + 1;
 		if (select(sel_fd, &descriptors, NULL, NULL, NULL)) {
-			if (FD_ISSET(db, &descriptors)){
-				memset(buff, 0, 256);
-				int size = read(db, buff, 256);
-				if (size > 0 && !(size == -1 && errno == EAGAIN)){
-					if (strcmp(buff, "LOCKED")==0) lock_rotation = 1;
-					else if (strcmp(buff, "UNLOCKED")==0) lock_rotation = 0;
-					if (!lock_rotation && !only_touchinput){
-						if (only_crtc) rotate_only_crtc();
-						else rotate();
-						repaint_bar(bar_command_path, sensors_fd);
-					}else
-					if (only_touchinput){
-						rotate_only_touchinput();
-					}
+			if (FD_ISSET(conn_fd, &descriptors)){
+				while ((evt = xcb_poll_for_event(conn)) != NULL) {
+					if (evt->response_type & XCB_RANDR_NOTIFY_MASK_SCREEN_CHANGE) {
+						randr_evt = (xcb_randr_screen_change_notify_event_t*) evt;
+			    		if (last_time != randr_evt->timestamp) {
+							last_time = randr_evt->timestamp;
+							if (monitor_with_name_disconnected(CRTC_NAME, CRTC_NAME_LEN) != 0){
+								printf("Crtc disconnected!\n");
+								crtc_disconnected = 1;
+								only_touchinput = 1;
+							}else
+							if (crtc_disconnected){
+								printf("Crtc reconnected!\n");
+								crtc_disconnected = 0;
+								only_touchinput = 0;
+								if (!get_crtc_with_name(&crtc, CRTC_NAME, CRTC_NAME_LEN) && !only_touchinput){
+									fprintf(stderr, "Failed to find crtc with name %s", CRTC_NAME);
+									Error = 1;
+									goto cleanup;
+								}
+							}
+			    		}
+				    }
+					free(evt);
 				}
+				
 			}
-			if (FD_ISSET(sensors_fd, &descriptors)){
-				memset(buff, 0, 256);
-				int size = read(sensors_fd, buff, 256);
-				if (size > 0 && !(size == -1 && errno == EAGAIN)){
-					if (strcmp(buff, "normal")==0) current_state = 0;
-					else if (strcmp(buff, "inverted")==0) current_state = 1;
-					else if (strcmp(buff, "left")==0) current_state = 2;
-					else if (strcmp(buff, "right")==0) current_state = 3;
-					else continue;
-					if (!lock_rotation && !only_touchinput){
-						if (only_crtc) rotate_only_crtc();
-						else rotate();
-						repaint_bar(bar_command_path, sensors_fd);
-					}else
-					if (only_touchinput){
-						rotate_only_touchinput();
-					}
-					
+			if (FD_ISSET(sock_fd, &descriptors)){
+				cli_fd = accept(sock_fd, NULL, 0);
+				if (cli_fd < 0 || (read_len = recv(cli_fd, buff, sizeof(buff)-1, 0)) < 0){ 
+					fprintf(stderr, "Error connecting");
+					continue;
+}
+				int ret = handle_msg(buff, read_len);
+				if (ret != BAD_MSG){
+					write(cli_fd,"STATUS OK",9);
+					exec_command(ret);
+				}else{
+					 write(cli_fd,"STATUS BAD",10);
 				}
+				
+   				close(cli_fd);
+				
 			}
 		}
 		if (xcb_connection_has_error(conn)){
@@ -305,9 +418,21 @@ int main(int argc, char const *argv[]) {
 	}
 	/// C L E A N U P ///
 cleanup:
+	if (socket_path) free(socket_path);
 	if (bar_command_path) free(bar_command_path);
 	if (device_info) free(device_info);
 	free(scrn_size);
 	kill_xcb();
 	return Error;
 }
+
+int handle_msg(char *msg, size_t msg_len){
+	int i = 0;
+	for (i = 0; i < NBR_OF_COMMANDS; i++){
+		if (strncmp(msg, commands[i].command_str, commands[i].command_len) == 0){
+			return commands[i].command;
+		}
+	}
+	return BAD_MSG;
+}
+
