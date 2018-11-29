@@ -33,13 +33,10 @@ xcb_randr_screen_size_t *get_screen_size(xcb_window_t);
 int set_crtc_config(xcb_randr_crtc_t, uint16_t);
 int set_screen_size(uint16_t , uint16_t , uint16_t , uint16_t);
 void set_screen_config(uint16_t);
+int monitor_with_name_disconnected(const char *, size_t);
 
 //xinput based functions
 
 xcb_input_device_info_t *find_device_info(const char *, const size_t);
 int set_device_property(const char *, const size_t, const char *, const size_t, const char *, const size_t, int, const int, const void *);
 int set_device_property_id(xcb_input_device_info_t *, const char *, const size_t, const char *, const size_t, int,  const int, const void *);
-
-
-
-
