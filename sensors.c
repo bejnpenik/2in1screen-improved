@@ -3,22 +3,25 @@
 #include <unistd.h>
 #include <string.h>
 #include <signal.h>
-#include <math.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #define DATA_SIZE 256
-#define N_STATE 4
-#define GYRO
+#define WAIT 1
 char basedir[DATA_SIZE];
 char *basedir_end = NULL;
 char content[DATA_SIZE];
-char *ROT[]   = {"normal", 				"inverted", 			"left", 				"right"};
+char *socket_path = NULL;
+char *ROT_CMD[]   = {
+	"rotate_normal", 				
+	"rotate_inverted", 			
+	"rotate_left", 				
+	"rotate_right"
+};
 double accel_y = 0.0,
-#if N_STATE == 4
 	   accel_x = 0.0,
-#endif
 	   accel_g = 5.0;
-#ifdef GYRO
-double anglvel_x = 0.0, anglvel_y = 0.0, anglvel_z = 0.0;
-#endif
+
 int current_state = 0;
 int run = 0;
 
@@ -26,10 +29,9 @@ int rotation_changed(){
 	int state = 0;
 	if(accel_y < -accel_g) state = 0;
 	else if(accel_y > accel_g) state = 1;
-#if N_STATE == 4
 	else if(accel_x > accel_g) state = 2;
 	else if(accel_x < -accel_g) state = 3;
-#endif
+
 
 	if(current_state!=state){
 		current_state = state;
@@ -51,13 +53,51 @@ FILE* bdopen(char const *fname, char leave_open){
 	}
 	else return fin;
 }
+
 void handle_signal(int sig)
 {
     if (sig == SIGTERM || sig == SIGINT || sig == SIGHUP)
         run = 0;
 		
 }
+int send_over_socket(char *socket_name, size_t socket_name_len){
+	int sockfd, servlen,n;
+	struct sockaddr_un  serv_addr;
+	serv_addr.sun_family = AF_UNIX;
+	if (socket_name == NULL){
+		strcpy(serv_addr.sun_path,"/tmp/2in1screen.socket");
+	}else{
+		memcpy(serv_addr.sun_path,socket_name, socket_name_len);
+	}
+	servlen = strlen(serv_addr.sun_path) + 
+		         sizeof(serv_addr.sun_family);
+	if ((sockfd = socket(AF_UNIX, SOCK_STREAM,0)) < 0)
+		fprintf(stderr,"Creating socket");
+	if (connect(sockfd, (struct sockaddr *) 
+		             &serv_addr, servlen) < 0)
+		fprintf(stderr, "Connecting");
+	if (send(sockfd,ROT_CMD[current_state],strlen(ROT_CMD[current_state]), 0) == -1){
+		fprintf(stderr, "Failed to send the data.\n"); 
+	}
+	char buffer[256] = {0};
+	n=read(sockfd,buffer,80);
+	write(1,buffer,n);
+	close(sockfd);	
+}
+
+
 int main(int argc, char const *argv[]) {
+	int path_len = 0;
+	if (argc > 1){
+		for (int i = 0; i < argc; i++){
+			if (strncmp(argv[i], "--socket-path", 13) == 0){
+				path_len = strlen(argv[i+1]);
+				socket_path = (char *)malloc((path_len+ 1)*sizeof(char));
+				memcpy(socket_path, argv[i+1], path_len);
+				socket_path[path_len] = '\0';
+			}
+		}
+	}
 	FILE *pf = popen("ls /sys/bus/iio/devices/iio:device*/in_accel*", "r");
 	if(!pf){
 		fprintf(stderr, "IO Error.\n");
@@ -78,32 +118,7 @@ int main(int argc, char const *argv[]) {
 	double scale = atof(content);
 
 	FILE *dev_accel_y = bdopen("in_accel_y_raw", 1);
-#if N_STATE == 4
 	FILE *dev_accel_x = bdopen("in_accel_x_raw", 1);
-#endif
-#ifdef GYRO
-	FILE *pfg = popen("ls /sys/bus/iio/devices/iio:device*/in_anglvel*", "r");
-	if(!pfg){
-		fprintf(stderr, "IO Error.\n");
-		return 2;
-	}
-	memset(basedir, 0, sizeof(basedir));
-	if(fgets(basedir, DATA_SIZE , pfg)!=NULL){
-		basedir_end = strrchr(basedir, '/');
-		if(basedir_end) *basedir_end = '\0';
-	}else{
-		fprintf(stderr, "Unable to find any gyroscope.\n");
-		return 1;
-	}
-	pclose(pfg);
-	bdopen("in_anglvel_scale", 0);
-	double gscale = atof(content);
-	FILE *dev_anglvel_x = bdopen("in_anglvel_x_raw", 1);
-	FILE *dev_anglvel_y = bdopen("in_anglvel_y_raw", 1);
-	FILE *dev_anglvel_z = bdopen("in_anglvel_z_raw", 1);
-	double vector;
-	
-#endif
 	signal(SIGTERM, handle_signal);
 	signal(SIGINT, handle_signal);
 	signal(SIGHUP, handle_signal);
@@ -112,41 +127,16 @@ int main(int argc, char const *argv[]) {
 		fseek(dev_accel_y, 0, SEEK_SET);
 		fgets(content, DATA_SIZE, dev_accel_y);
 		accel_y = atof(content) * scale;
-#if N_STATE == 4
 		fseek(dev_accel_x, 0, SEEK_SET);
 		fgets(content, DATA_SIZE, dev_accel_x);
 		accel_x = atof(content) * scale;
-#endif
-#ifdef GYRO
-		fseek(dev_anglvel_x, 0, SEEK_SET);
-		fgets(content, DATA_SIZE, dev_anglvel_x);
-		anglvel_x = atof(content) * gscale;
-		fseek(dev_anglvel_y, 0, SEEK_SET);
-		fgets(content, DATA_SIZE, dev_anglvel_y);
-		anglvel_y = atof(content) * gscale;
-		fseek(dev_anglvel_z, 0, SEEK_SET);
-		fgets(content, DATA_SIZE, dev_anglvel_z);
-		anglvel_z = atof(content) * gscale;
-		vector = sqrt(anglvel_x*anglvel_x + anglvel_y*anglvel_y+ anglvel_z*anglvel_z);
-		while (vector > 0.5){//try to detect moving ... kinda
-			continue;
-		}
-	
-#endif
 		if(rotation_changed()){
-			printf("%s", ROT[current_state]);
-			fflush(stdout);
+			send_over_socket(socket_path, path_len);
 		}
+		sleep(WAIT);
 	}
 	fclose(dev_accel_y);
-#if N_STATE == 4
 	fclose(dev_accel_x);
-#endif
-#ifdef GYRO
-	fclose(dev_anglvel_x);
-	fclose(dev_anglvel_y);
-	fclose(dev_anglvel_z);
-#endif
-	
+	if (socket_path != NULL) free(socket_path);
 	return 0;
 }
