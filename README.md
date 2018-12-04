@@ -41,12 +41,19 @@ Some bars like lemonbar or polybar dont repaint themselves while screen sizes ch
  --socket-path SOCKET_PATH
  
  Additionally there is a little client which accepts following commands:
+ 
   rotate_left
+  
   rotate_right
+  
   rotate-normal
+  
   rotate-inverted
+  
   lock_rotation
+  
   unlock_rotation
+  
   toggle_lock
  
  ## Dependencies
