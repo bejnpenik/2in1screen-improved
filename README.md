@@ -15,6 +15,10 @@ gcc -O2 -o sensors sensors.c -lm
 
 gcc -O2 -o 2in1screen 2in1screen.c xcb_util_functions.c -lxcb -lxcb-randr -lxcb-xinput
 
+CLIENT:
+
+gcc -02 -o client client.c 
+
 ## Run
 
 ./2in1screen
@@ -32,6 +36,18 @@ Dont have touchscreen input but still can rotate (Dunno if this even exists ... 
 Some bars like lemonbar or polybar dont repaint themselves while screen sizes change. It has to be done manually. Additionaly there needs to be way to lock rotation and easiest thing would be to communicate with bar widget (in my case lemonbar) so...
  
  --bar-path-command COMMAND_PATH
+ 
+ Added a socket at /tmp/2in1screen.socket for better IPC or you can specify a path with arg:
+ --socket-path SOCKET_PATH
+ 
+ Additionally there is a little client which accepts following commands:
+  rotate_left
+  rotate_right
+  rotate-normal
+  rotate-inverted
+  lock_rotation
+  unlock_rotation
+  toggle_lock
  
  ## Dependencies
   - xcb
