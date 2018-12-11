@@ -55,6 +55,17 @@ Some bars like lemonbar or polybar dont repaint themselves while screen sizes ch
   unlock_rotation
   
   toggle_lock
+  
+ ## TODO
+ For now you have to manually find your devices and change the following code:
+ ```c
+ /// D E F I N I T I O N S///
+const char CRTC_NAME[] = "eDP1";
+const int CRTC_NAME_LEN = 4;
+const char DEVICE_NAME[] = "ELAN2514:00 04F3:262F";
+const int DEVICE_NAME_LEN = 21;
+```
+It would be nice that this thing is done at initialization automatically.
  
  ## Dependencies
   - xcb
