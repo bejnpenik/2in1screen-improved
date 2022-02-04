@@ -78,7 +78,7 @@ Most of you have this already
 
 ## Licence
 
-No licence. Do as you wish.
+No licence. Do as you wish. I am not liable for anything caused by this piece of marvelous code.
   
 
 
